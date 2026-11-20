@@ -457,6 +457,24 @@ svg.icon { width: 20px; height: 20px; flex: none; stroke: currentColor; fill: no
 .tag-chip button:hover { background: rgba(0, 0, 0, .08); }
 .tag-chip button svg.icon { width: 14px; height: 14px; }
 
+/* 프로필 사진(동그라미) */
+.photo-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.photo-side { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 200px; }
+.photo-circle {
+  width: 96px; height: 96px; border-radius: 50%; flex: none; overflow: hidden;
+  border: 1.5px dashed var(--border-strong); background: var(--input-bg);
+  display: grid; place-items: center; color: var(--muted);
+}
+.photo-circle.has { border: 1px solid var(--border); background: #FFFFFF; }
+.photo-circle img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo-circle svg.icon { width: 36px; height: 36px; }
+.brand-logo:has(.brand-photo) { gap: 10px; }
+.brand-logo .brand-photo {
+  width: 32px; height: 32px; max-height: none; max-width: none; flex: none;
+  border-radius: 50%; object-fit: cover; background: #FFFFFF; border: 1px solid var(--border);
+}
+.brand-logo .brand-photo + img { min-width: 0; }
+
 .logo-slots { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
 .logo-slot { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .logo-slot-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 15px; }
@@ -945,6 +963,21 @@ svg.icon { width: 20px; height: 20px; flex: none; stroke: currentColor; fill: no
         </div>
 
         <div class="profile-stack" id="profileForm">
+          <div class="card">
+            <h2 class="card-title">프로필 사진(로고)</h2>
+            <div class="photo-row">
+              <div class="photo-circle" id="profilePhotoBox"></div>
+              <div class="photo-side">
+                <div class="row">
+                  <button class="btn btn-sm" type="button" id="profilePhotoPick">사진 올리기</button>
+                  <button class="btn btn-sm btn-danger-ghost" type="button" id="profilePhotoDelete">지우기</button>
+                  <input class="sr-only" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" id="profilePhotoInput" tabindex="-1" aria-hidden="true">
+                </div>
+                <p class="hint" id="profilePhotoMeta">PNG·JPG·WEBP. 큰 사진은 가로세로 400px 안으로 줄여서 이 브라우저에만 저장해요.</p>
+              </div>
+            </div>
+          </div>
+
           <div class="card">
             <h2 class="card-title">기본 정보</h2>
             <div class="field-grid">
@@ -1974,6 +2007,89 @@ function renderLogos() {
   renderBrand();
 }
 
+/* ----- 프로필 사진(로고): 이 브라우저(localStorage)에만 저장, 코드·폴더에는 넣지 않음 ----- */
+const PHOTO_MAX = 400; // 가로세로 400px 안으로 줄여서 저장
+const PHOTO_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+
+function getProfilePhoto() {
+  const s = storage.get('profilePhoto', '');
+  return typeof s === 'string' && /^data:image\/(png|jpeg|webp)[;,]/.test(s) ? s : '';
+}
+
+function photoMimeFor(file) {
+  if (PHOTO_TYPES.includes(file.type)) return file.type;
+  const name = (file.name || '').toLowerCase();
+  if (name.endsWith('.png')) return 'image/png';
+  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
+  if (name.endsWith('.webp')) return 'image/webp';
+  return '';
+}
+
+// 비율을 유지한 채 400px 안으로 줄임(작은 사진은 크기 그대로). 투명 배경이 있을 수 있는 PNG·WEBP는 PNG로 저장
+async function shrinkPhoto(file, mime) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = reject;
+      i.src = url;
+    });
+    const w0 = img.naturalWidth, h0 = img.naturalHeight;
+    if (!w0 || !h0) throw new Error('size');
+    const scale = Math.min(1, PHOTO_MAX / Math.max(w0, h0));
+    const w = Math.max(1, Math.round(w0 * scale)), h = Math.max(1, Math.round(h0 * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, w, h);
+    const out = mime === 'image/jpeg' ? canvas.toDataURL('image/jpeg', 0.88) : canvas.toDataURL('image/png');
+    return { dataUrl: out, w, h, resized: scale < 1 };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function handleProfilePhoto(file) {
+  if (!file) return;
+  const mime = photoMimeFor(file);
+  if (!mime) { toast('PNG, JPG, WEBP 사진만 올릴 수 있어요.', 'error'); return; }
+  let r;
+  try { r = await shrinkPhoto(file, mime); }
+  catch (e) { toast('사진을 읽지 못했어요. 다른 파일로 시도해 주세요.', 'error'); return; }
+  if (!storage.set('profilePhoto', r.dataUrl)) {
+    toast('저장 공간이 부족해 사진을 저장하지 못했어요.', 'error', 4500);
+    return;
+  }
+  renderProfilePhoto();
+  toast(r.resized ? `사진을 ${r.w}×${r.h}px로 줄여서 저장했어요.` : '사진을 저장했어요.');
+}
+
+async function deleteProfilePhoto() {
+  if (!getProfilePhoto()) { toast('지울 사진이 없어요.'); return; }
+  const ok = await confirmDialog('프로필 사진을 지울까요?', { okText: '지우기', danger: true });
+  if (!ok) return;
+  storage.remove('profilePhoto');
+  renderProfilePhoto();
+  toast('프로필 사진을 지웠어요.');
+}
+
+function renderProfilePhoto() {
+  const src = getProfilePhoto();
+  const box = $('#profilePhotoBox');
+  box.classList.toggle('has', !!src);
+  if (src) box.replaceChildren(el('img', { src, alt: '프로필 사진' }));
+  else box.innerHTML = icon('user');
+  $('#profilePhotoDelete').disabled = !src;
+  const meta = $('#profilePhotoMeta');
+  meta.textContent = src
+    ? `저장됨 · ${formatBytes(dataUrlBytes(src))} · 왼쪽 위 상호 옆에도 작게 보여요.`
+    : 'PNG·JPG·WEBP. 큰 사진은 가로세로 400px 안으로 줄여서 이 브라우저에만 저장해요.';
+  renderBrand();
+}
+
 // 사이드바 로고: 업로드한 파일만 사용, 없으면 글자로 대신 표시
 function renderBrand() {
   const logos = getLogos();
@@ -1984,6 +2100,8 @@ function renderBrand() {
   box.replaceChildren(src
     ? el('img', { src, alt: name })
     : el('span', { class: 'wordmark', text: name }));
+  const photo = getProfilePhoto();
+  if (photo) box.prepend(el('img', { class: 'brand-photo', src: photo, alt: '' })); // 사진이 없으면 지금 모습 그대로
   $('#brandApp').textContent = APP_NAME;
 }
 
@@ -2070,6 +2188,14 @@ function initProfile() {
     input.value = '';
   }));
   $$('[data-logo-delete]').forEach(btn => btn.addEventListener('click', () => deleteLogo(btn.dataset.logoDelete)));
+
+  renderProfilePhoto();
+  $('#profilePhotoPick').addEventListener('click', () => $('#profilePhotoInput').click());
+  $('#profilePhotoInput').addEventListener('change', async (e) => {
+    await handleProfilePhoto(e.target.files[0]);
+    e.target.value = '';
+  });
+  $('#profilePhotoDelete').addEventListener('click', deleteProfilePhoto);
 
   $('#profileSave').addEventListener('click', saveProfile);
   $('#profileExport').addEventListener('click', exportProfile);
